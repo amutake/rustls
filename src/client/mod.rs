@@ -470,7 +470,7 @@ impl ClientSessionImpl {
         self.process_main_protocol(msg)
     }
 
-    fn process_new_handshake_messages(&mut self) -> Result<(), TLSError> {
+    pub fn process_new_handshake_messages(&mut self) -> Result<(), TLSError> {
         while let Some(msg) = self.common.handshake_joiner.frames.pop_front() {
             self.process_main_protocol(msg)?;
         }
