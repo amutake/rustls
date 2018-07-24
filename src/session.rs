@@ -377,7 +377,7 @@ pub struct SessionCommon {
     message_encrypter: Box<MessageEncrypter>,
     message_decrypter: Box<MessageDecrypter>,
     pub secrets: Option<SessionSecrets>,
-    key_schedule: Option<KeySchedule>,
+    pub key_schedule: Option<KeySchedule>,
     suite: Option<&'static SupportedCipherSuite>,
     write_seq: u64,
     read_seq: u64,
@@ -393,6 +393,7 @@ pub struct SessionCommon {
     received_plaintext: ChunkVecBuffer,
     sendable_plaintext: ChunkVecBuffer,
     pub sendable_tls: ChunkVecBuffer,
+    pub quic: Quic,
 }
 
 impl SessionCommon {
@@ -419,6 +420,7 @@ impl SessionCommon {
             received_plaintext: ChunkVecBuffer::new(),
             sendable_plaintext: ChunkVecBuffer::new(),
             sendable_tls: ChunkVecBuffer::new(),
+            quic: Quic { enabled: false, params: None },
         }
     }
 
@@ -838,4 +840,11 @@ impl SessionCommon {
         let enc = self.we_encrypting;
         self.send_msg(m, enc);
     }
+}
+
+pub struct Quic {
+    /// Whether this is a QUIC session
+    pub enabled: bool,
+    /// QUIC transport parameters received from the peer during the handshake
+    pub params: Option<Vec<u8>>,
 }

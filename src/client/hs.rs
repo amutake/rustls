@@ -72,6 +72,7 @@ type NextStateOrError = Result<NextState, TLSError>;
 pub trait State {
     fn check_message(&self, m: &Message) -> CheckResult;
     fn handle(self: Box<Self>, sess: &mut ClientSessionImpl, m: Message) -> NextStateOrError;
+    fn details(&self) -> &HandshakeDetails;
 }
 
 fn illegal_param(sess: &mut ClientSessionImpl, why: &str) -> TLSError {
@@ -156,7 +157,7 @@ pub fn fill_in_psk_binder(sess: &mut ClientSessionImpl,
 
     // Run a fake key_schedule to simulate what the server will do if it choses
     // to resume.
-    let mut key_schedule = KeySchedule::new(suite_hash);
+    let mut key_schedule = KeySchedule::new(suite_hash, sess.common.quic.enabled);
     key_schedule.input_secret(&resuming.master_secret.0);
     let base_key = key_schedule.derive(SecretKind::ResumptionPSKBinderKey, &empty_hash);
     let real_binder = key_schedule.sign_verify_data(&base_key, &handshake_hash);
@@ -544,7 +545,7 @@ impl ExpectServerHello {
             // Discard the early data key schedule.
             sess.early_data.rejected();
             sess.common.early_traffic = false;
-            let mut key_schedule = KeySchedule::new(suite.get_hash());
+            let mut key_schedule = KeySchedule::new(suite.get_hash(), sess.common.quic.enabled);
             key_schedule.input_empty();
             sess.common.set_key_schedule(key_schedule);
             self.handshake.resuming_session.take();
@@ -636,6 +637,8 @@ impl ExpectServerHello {
 }
 
 impl State for ExpectServerHello {
+    fn details(&self) -> &HandshakeDetails { &self.handshake }
+
     fn check_message(&self, m: &Message) -> CheckResult {
         check_handshake_message(m, &[HandshakeType::ServerHello])
     }
@@ -698,13 +701,6 @@ impl State for ExpectServerHello {
         // Extract ALPN protocol
         if !sess.common.is_tls13() {
             process_alpn_protocol(sess, server_hello.get_alpn_protocol())?;
-        }
-
-        // Reject QUIC if TLS1.2 is in use.
-        if !sess.common.is_tls13() &&
-            server_hello.find_extension(ExtensionType::TransportParameters).is_some() {
-            sess.common.send_fatal_alert(AlertDescription::UnsupportedExtension);
-            return Err(TLSError::PeerMisbehavedError("server wants to do quic+tls1.2".to_string()));
         }
 
         // If ECPointFormats extension is supplied by the server, it must contain
@@ -922,6 +918,8 @@ impl ExpectServerHelloOrHelloRetryRequest {
 }
 
 impl State for ExpectServerHelloOrHelloRetryRequest {
+    fn details(&self) -> &HandshakeDetails { &self.0.handshake }
+
     fn check_message(&self, m: &Message) -> CheckResult {
         check_handshake_message(m,
                                 &[HandshakeType::ServerHello,
@@ -991,6 +989,8 @@ impl ExpectTLS13EncryptedExtensions {
 }
 
 impl State for ExpectTLS13EncryptedExtensions {
+    fn details(&self) -> &HandshakeDetails { &self.handshake }
+
     fn check_message(&self, m: &Message) -> Result<(), TLSError> {
         check_handshake_message(m, &[HandshakeType::EncryptedExtensions])
     }
@@ -1005,7 +1005,7 @@ impl State for ExpectTLS13EncryptedExtensions {
 
         // QUIC transport parameters
         if let Some(params) = exts.get_quic_params_extension() {
-            sess.quic_params = Some(params);
+            sess.common.quic.params = Some(params);
         }
 
         if self.handshake.resuming_session.is_some() {
@@ -1067,6 +1067,8 @@ impl ExpectTLS13Certificate {
 }
 
 impl State for ExpectTLS13Certificate {
+    fn details(&self) -> &HandshakeDetails { &self.handshake }
+
     fn check_message(&self, m: &Message) -> Result<(), TLSError> {
         check_handshake_message(m, &[HandshakeType::Certificate])
     }
@@ -1135,6 +1137,8 @@ impl ExpectTLS12Certificate {
 }
 
 impl State for ExpectTLS12Certificate {
+    fn details(&self) -> &HandshakeDetails { &self.handshake }
+
     fn check_message(&self, m: &Message) -> Result<(), TLSError> {
         check_handshake_message(m, &[HandshakeType::Certificate])
     }
@@ -1170,6 +1174,8 @@ impl ExpectTLS12CertificateStatus {
 }
 
 impl State for ExpectTLS12CertificateStatus {
+    fn details(&self) -> &HandshakeDetails { &self.handshake }
+
     fn check_message(&self, m: &Message) -> Result<(), TLSError> {
         check_handshake_message(m, &[HandshakeType::CertificateStatus])
     }
@@ -1209,6 +1215,8 @@ impl ExpectTLS12CertificateStatusOrServerKX {
 }
 
 impl State for ExpectTLS12CertificateStatusOrServerKX {
+    fn details(&self) -> &HandshakeDetails { &self.handshake }
+
     fn check_message(&self, m: &Message) -> Result<(), TLSError> {
         check_handshake_message(m,
                                 &[HandshakeType::ServerKeyExchange,
@@ -1247,6 +1255,8 @@ impl ExpectTLS13CertificateOrCertReq {
 }
 
 impl State for ExpectTLS13CertificateOrCertReq {
+    fn details(&self) -> &HandshakeDetails { &self.handshake }
+
     fn check_message(&self, m: &Message) -> Result<(), TLSError> {
         check_handshake_message(m,
                                 &[HandshakeType::Certificate,
@@ -1280,6 +1290,8 @@ impl ExpectTLS12ServerKX {
 }
 
 impl State for ExpectTLS12ServerKX {
+    fn details(&self) -> &HandshakeDetails { &self.handshake }
+
     fn check_message(&self, m: &Message) -> Result<(), TLSError> {
         check_handshake_message(m, &[HandshakeType::ServerKeyExchange])
     }
@@ -1346,6 +1358,8 @@ fn send_cert_error_alert(sess: &mut ClientSessionImpl, err: TLSError) -> TLSErro
 }
 
 impl State for ExpectTLS13CertificateVerify {
+    fn details(&self) -> &HandshakeDetails { &self.handshake }
+
     fn check_message(&self, m: &Message) -> Result<(), TLSError> {
         check_handshake_message(m, &[HandshakeType::CertificateVerify])
     }
@@ -1517,6 +1531,8 @@ impl ExpectTLS12CertificateRequest {
 }
 
 impl State for ExpectTLS12CertificateRequest {
+    fn details(&self) -> &HandshakeDetails { &self.handshake }
+
     fn check_message(&self, m: &Message) -> Result<(), TLSError> {
         check_handshake_message(m, &[HandshakeType::CertificateRequest])
     }
@@ -1576,6 +1592,8 @@ impl ExpectTLS13CertificateRequest {
 }
 
 impl State for ExpectTLS13CertificateRequest {
+    fn details(&self) -> &HandshakeDetails { &self.handshake }
+
     fn check_message(&self, m: &Message) -> Result<(), TLSError> {
         check_handshake_message(m, &[HandshakeType::CertificateRequest])
     }
@@ -1662,6 +1680,8 @@ impl ExpectTLS12ServerDoneOrCertReq {
 }
 
 impl State for ExpectTLS12ServerDoneOrCertReq {
+    fn details(&self) -> &HandshakeDetails { &self.handshake }
+
     fn check_message(&self, m: &Message) -> Result<(), TLSError> {
         check_handshake_message(m,
                                 &[HandshakeType::CertificateRequest,
@@ -1713,6 +1733,8 @@ impl ExpectTLS12ServerDone {
 }
 
 impl State for ExpectTLS12ServerDone {
+    fn details(&self) -> &HandshakeDetails { &self.handshake }
+
     fn check_message(&self, m: &Message) -> Result<(), TLSError> {
         check_handshake_message(m, &[HandshakeType::ServerHelloDone])
     }
@@ -1862,6 +1884,8 @@ impl ExpectTLS12CCS {
 }
 
 impl State for ExpectTLS12CCS {
+    fn details(&self) -> &HandshakeDetails { &self.handshake }
+
     fn check_message(&self, m: &Message) -> Result<(), TLSError> {
         check_message(m, &[ContentType::ChangeCipherSpec], &[])
     }
@@ -1904,6 +1928,8 @@ impl ExpectTLS12NewTicket {
 }
 
 impl State for ExpectTLS12NewTicket {
+    fn details(&self) -> &HandshakeDetails { &self.handshake }
+
     fn check_message(&self, m: &Message) -> Result<(), TLSError> {
         check_handshake_message(m, &[HandshakeType::NewSessionTicket])
     }
@@ -2078,6 +2104,8 @@ impl ExpectTLS13Finished {
 }
 
 impl State for ExpectTLS13Finished {
+    fn details(&self) -> &HandshakeDetails { &self.handshake }
+
     fn check_message(&self, m: &Message) -> CheckResult {
         check_handshake_message(m, &[HandshakeType::Finished])
     }
@@ -2194,6 +2222,7 @@ impl ExpectTLS12Finished {
     fn into_expect_tls12_traffic(self,
                                  fin: verify::FinishedMessageVerified) -> NextState {
         Box::new(ExpectTLS12Traffic {
+            handshake: self.handshake,
             _cert_verified: self.cert_verified,
             _sig_verified: self.sig_verified,
             _fin_verified: fin,
@@ -2202,6 +2231,8 @@ impl ExpectTLS12Finished {
 }
 
 impl State for ExpectTLS12Finished {
+    fn details(&self) -> &HandshakeDetails { &self.handshake }
+
     fn check_message(&self, m: &Message) -> Result<(), TLSError> {
         check_handshake_message(m, &[HandshakeType::Finished])
     }
@@ -2246,12 +2277,15 @@ impl State for ExpectTLS12Finished {
 
 // -- Traffic transit state --
 struct ExpectTLS12Traffic {
+    handshake: HandshakeDetails,
     _cert_verified: verify::ServerCertVerified,
     _sig_verified: verify::HandshakeSignatureValid,
     _fin_verified: verify::FinishedMessageVerified,
 }
 
 impl State for ExpectTLS12Traffic {
+    fn details(&self) -> &HandshakeDetails { &self.handshake }
+
     fn check_message(&self, m: &Message) -> Result<(), TLSError> {
         check_message(m, &[ContentType::ApplicationData], &[])
     }
@@ -2316,6 +2350,8 @@ impl ExpectTLS13Traffic {
 }
 
 impl State for ExpectTLS13Traffic {
+    fn details(&self) -> &HandshakeDetails { &self.handshake }
+
     fn check_message(&self, m: &Message) -> Result<(), TLSError> {
         check_message(m,
                       &[ContentType::ApplicationData, ContentType::Handshake],

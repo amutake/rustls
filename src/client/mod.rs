@@ -352,7 +352,6 @@ impl<'a> io::Write for WriteEarlyData<'a> {
 pub struct ClientSessionImpl {
     pub config: Arc<ClientConfig>,
     pub alpn_protocol: Option<String>,
-    pub quic_params: Option<Vec<u8>>,
     pub common: SessionCommon,
     pub error: Option<TLSError>,
     pub state: Option<Box<hs::State + Send + Sync>>,
@@ -371,7 +370,6 @@ impl ClientSessionImpl {
         ClientSessionImpl {
             config: config.clone(),
             alpn_protocol: None,
-            quic_params: None,
             common: SessionCommon::new(config.mtu, true),
             error: None,
             state: None,
@@ -382,6 +380,10 @@ impl ClientSessionImpl {
 
     pub fn start_handshake(&mut self, hostname: webpki::DNSName, extra_exts: Vec<ClientExtension>) {
         self.state = Some(hs::start_handshake(self, hostname, extra_exts));
+    }
+
+    pub fn handshake_transcript_hash(&self) -> Vec<u8> {
+        self.state.as_ref().unwrap().details().transcript.get_current_hash()
     }
 
     pub fn get_cipher_suites(&self) -> Vec<CipherSuite> {

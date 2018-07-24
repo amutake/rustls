@@ -3,6 +3,7 @@
 use ring::{hmac, digest, hkdf};
 use msgs::codec::Codec;
 use error::TLSError;
+use suites::SupportedCipherSuite;
 
 /// The kinds of secret we can extract from `KeySchedule`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -42,13 +43,17 @@ pub struct KeySchedule {
     need_derive_for_extract: bool,
     hash: &'static digest::Algorithm,
     hash_of_empty_message: [u8; digest::MAX_OUTPUT_LEN],
+    prefix: &'static [u8],
     pub current_client_traffic_secret: Vec<u8>,
     pub current_server_traffic_secret: Vec<u8>,
     pub current_exporter_secret: Vec<u8>,
 }
 
+const TLS13_LABEL_PREFIX: &[u8] = b"tls13 ";
+const QUIC_LABEL_PREFIX: &[u8] = b"quic ";
+
 impl KeySchedule {
-    pub fn new(hash: &'static digest::Algorithm) -> KeySchedule {
+    pub fn new(hash: &'static digest::Algorithm, quic: bool) -> KeySchedule {
         let zeroes = [0u8; digest::MAX_OUTPUT_LEN];
 
         let mut empty_hash = [0u8; digest::MAX_OUTPUT_LEN];
@@ -60,6 +65,7 @@ impl KeySchedule {
             need_derive_for_extract: false,
             hash,
             hash_of_empty_message: empty_hash,
+            prefix: if quic { QUIC_LABEL_PREFIX } else { TLS13_LABEL_PREFIX },
             current_server_traffic_secret: Vec::new(),
             current_client_traffic_secret: Vec::new(),
             current_exporter_secret: Vec::new(),
@@ -94,6 +100,7 @@ impl KeySchedule {
         debug_assert_eq!(hs_hash.len(), self.hash.output_len);
 
         _hkdf_expand_label_vec(&self.current,
+                               self.prefix,
                                kind.to_bytes(),
                                hs_hash,
                                self.hash.output_len)
@@ -124,6 +131,7 @@ impl KeySchedule {
         debug_assert_eq!(hs_hash.len(), self.hash.output_len);
 
         let hmac_key = _hkdf_expand_label_vec(&hmac::SigningKey::new(self.hash, base_key),
+                                              self.prefix,
                                               b"finished",
                                               &[],
                                               self.hash.output_len);
@@ -138,6 +146,7 @@ impl KeySchedule {
     pub fn derive_next(&self, kind: SecretKind) -> Vec<u8> {
         let base_key = self.current_traffic_secret(kind);
         _hkdf_expand_label_vec(&hmac::SigningKey::new(self.hash, base_key),
+                               self.prefix,
                                b"traffic upd",
                                &[],
                                self.hash.output_len)
@@ -147,6 +156,7 @@ impl KeySchedule {
     /// ticket_nonce.
     pub fn derive_ticket_psk(&self, rms: &[u8], nonce: &[u8]) -> Vec<u8> {
         _hkdf_expand_label_vec(&hmac::SigningKey::new(self.hash, rms),
+                               self.prefix,
                                b"resumption",
                                nonce,
                                self.hash.output_len)
@@ -164,6 +174,7 @@ impl KeySchedule {
         _hkdf_expand_label(&mut secret[..self.hash.output_len],
                            &hmac::SigningKey::new(self.hash,
                                                   &self.current_exporter_secret),
+                           self.prefix,
                            label,
                            h_empty.as_ref());
 
@@ -175,6 +186,7 @@ impl KeySchedule {
 
         _hkdf_expand_label(out,
                            &hmac::SigningKey::new(self.hash, &secret[..self.hash.output_len]),
+                           self.prefix,
                            b"exporter",
                            &h_context[..self.hash.output_len]);
         Ok(())
@@ -182,6 +194,7 @@ impl KeySchedule {
 }
 
 fn _hkdf_expand_label_vec(secret: &hmac::SigningKey,
+                          label_prefix: &[u8],
                           label: &[u8],
                           context: &[u8],
                           len: usize) -> Vec<u8> {
@@ -189,17 +202,16 @@ fn _hkdf_expand_label_vec(secret: &hmac::SigningKey,
     v.resize(len, 0u8);
     _hkdf_expand_label(&mut v,
                        secret,
-                       label,
+                       label_prefix, label,
                        context);
     v
 }
 
 fn _hkdf_expand_label(output: &mut [u8],
                       secret: &hmac::SigningKey,
+                      label_prefix: &[u8],
                       label: &[u8],
                       context: &[u8]) {
-    let label_prefix = b"tls13 ";
-
     let mut hkdflabel = Vec::new();
     (output.len() as u16).encode(&mut hkdflabel);
     ((label.len() + label_prefix.len()) as u8).encode(&mut hkdflabel);
@@ -211,24 +223,34 @@ fn _hkdf_expand_label(output: &mut [u8],
     hkdf::expand(secret, &hkdflabel, output)
 }
 
-pub fn derive_traffic_key(hash: &'static digest::Algorithm, secret: &[u8], len: usize) -> Vec<u8> {
-    _hkdf_expand_label_vec(&hmac::SigningKey::new(hash, secret), b"key", &[], len)
+pub struct TrafficKey {
+    pub key: Vec<u8>,
+    pub iv: Vec<u8>,
 }
 
-pub fn derive_traffic_iv(hash: &'static digest::Algorithm, secret: &[u8], len: usize) -> Vec<u8> {
-    _hkdf_expand_label_vec(&hmac::SigningKey::new(hash, secret), b"iv", &[], len)
+impl TrafficKey {
+    pub fn new(hash: &'static digest::Algorithm, secret: &[u8], key_len: usize, iv_len: usize, quic: bool) -> Self {
+        let prefix = if quic { QUIC_LABEL_PREFIX } else { TLS13_LABEL_PREFIX };
+        let key = _hkdf_expand_label_vec(&hmac::SigningKey::new(hash, secret), prefix, b"key", &[], key_len);
+        let iv = _hkdf_expand_label_vec(&hmac::SigningKey::new(hash, secret), prefix, b"iv", &[], iv_len);
+        Self { key, iv }
+    }
+
+    pub fn from_suite(suite: &SupportedCipherSuite, secret: &[u8], quic: bool) -> Self {
+        Self::new(suite.get_hash(), secret, suite.enc_key_len, suite.fixed_iv_len, quic)
+    }
 }
 
 #[cfg(test)]
 mod test {
-    use super::{KeySchedule, SecretKind, derive_traffic_key, derive_traffic_iv};
+    use super::{KeySchedule, SecretKind, TrafficKey};
     use ring::digest;
 
     #[test]
     fn smoke_test() {
         let fake_handshake_hash = [0u8; 32];
 
-        let mut ks = KeySchedule::new(&digest::SHA256);
+        let mut ks = KeySchedule::new(&digest::SHA256, false);
         ks.input_empty(); // no PSK
         ks.derive(SecretKind::ResumptionPSKBinderKey, &fake_handshake_hash);
         ks.input_secret(&[1u8, 2u8, 3u8, 4u8]);
@@ -326,47 +348,43 @@ mod test {
         ];
 
         let hash = &digest::SHA256;
-        let mut ks = KeySchedule::new(hash);
+        let mut ks = KeySchedule::new(hash, false);
         ks.input_empty();
         ks.input_secret(&ecdhe_secret);
 
         let got_client_hts = ks.derive(SecretKind::ClientHandshakeTrafficSecret,
                                        &hs_start_hash);
+        let traffic = TrafficKey::new(hash, &got_client_hts, client_hts_key.len(), client_hts_iv.len(), false);
         assert_eq!(got_client_hts,
                    client_hts.to_vec());
-        assert_eq!(derive_traffic_key(hash, &got_client_hts, client_hts_key.len()),
-                   client_hts_key.to_vec());
-        assert_eq!(derive_traffic_iv(hash, &got_client_hts, client_hts_iv.len()),
-                   client_hts_iv.to_vec());
+        assert_eq!(traffic.key, client_hts_key.to_vec());
+        assert_eq!(traffic.iv, client_hts_iv.to_vec());
 
         let got_server_hts = ks.derive(SecretKind::ServerHandshakeTrafficSecret,
                                        &hs_start_hash);
+        let traffic = TrafficKey::new(hash, &got_server_hts, server_hts_key.len(), server_hts_iv.len(), false);
         assert_eq!(got_server_hts,
                    server_hts.to_vec());
-        assert_eq!(derive_traffic_key(hash, &got_server_hts, server_hts_key.len()),
-                   server_hts_key.to_vec());
-        assert_eq!(derive_traffic_iv(hash, &got_server_hts, server_hts_iv.len()),
-                   server_hts_iv.to_vec());
+        assert_eq!(traffic.key, server_hts_key.to_vec());
+        assert_eq!(traffic.iv, server_hts_iv.to_vec());
 
         ks.input_empty();
 
         let got_client_ats = ks.derive(SecretKind::ClientApplicationTrafficSecret,
                                        &hs_full_hash);
+        let traffic = TrafficKey::new(hash, &got_client_ats, client_ats_key.len(), client_ats_iv.len(), false);
         assert_eq!(got_client_ats,
                    client_ats.to_vec());
-        assert_eq!(derive_traffic_key(hash, &got_client_ats, client_ats_key.len()),
-                   client_ats_key.to_vec());
-        assert_eq!(derive_traffic_iv(hash, &got_client_ats, client_ats_iv.len()),
-                   client_ats_iv.to_vec());
+        assert_eq!(traffic.key, client_ats_key.to_vec());
+        assert_eq!(traffic.iv, client_ats_iv.to_vec());
 
         let got_server_ats = ks.derive(SecretKind::ServerApplicationTrafficSecret,
                                        &hs_full_hash);
+        let traffic = TrafficKey::new(hash, &got_server_ats, server_ats_key.len(), server_ats_iv.len(), false);
         assert_eq!(got_server_ats,
                    server_ats.to_vec());
-        assert_eq!(derive_traffic_key(hash, &got_server_ats, server_ats_key.len()),
-                   server_ats_key.to_vec());
-        assert_eq!(derive_traffic_iv(hash, &got_server_ats, server_ats_iv.len()),
-                   server_ats_iv.to_vec());
+        assert_eq!(traffic.key, server_ats_key.to_vec());
+        assert_eq!(traffic.iv, server_ats_iv.to_vec());
 
     }
 }
