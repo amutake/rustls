@@ -382,10 +382,6 @@ impl ClientSessionImpl {
         self.state = Some(hs::start_handshake(self, hostname, extra_exts));
     }
 
-    pub fn handshake_transcript_hash(&self) -> Vec<u8> {
-        self.state.as_ref().unwrap().details().transcript.get_current_hash()
-    }
-
     pub fn get_cipher_suites(&self) -> Vec<CipherSuite> {
         let mut ret = Vec::new();
 

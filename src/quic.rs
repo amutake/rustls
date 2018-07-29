@@ -72,7 +72,7 @@ impl QuicExt for ClientSession {
 
     fn get_handshake_keys(&self) -> Option<Keys> {
         let key_schedule = self.imp.common.key_schedule.as_ref()?;
-        let handshake_hash = self.imp.handshake_transcript_hash();
+        let handshake_hash = self.imp.common.hs_transcript.get_current_hash();
         let suite = self.imp.common.get_suite_assert();
         let write_secret = key_schedule.derive(SecretKind::ClientHandshakeTrafficSecret, &handshake_hash);
         let write = TrafficKey::from_suite(suite, &write_secret, Protocol::Quic);

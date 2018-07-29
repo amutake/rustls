@@ -17,6 +17,7 @@ use key_schedule::{SecretKind, KeySchedule, Protocol};
 use prf;
 use rand;
 use quic;
+use hash_hs;
 
 use std::io;
 use std::collections::VecDeque;
@@ -396,6 +397,7 @@ pub struct SessionCommon {
     /// Protocol whose key schedule should be used. Unused for TLS < 1.3.
     pub protocol: Protocol,
     pub quic: Quic,
+    pub hs_transcript: hash_hs::HandshakeHash,
 }
 
 impl SessionCommon {
@@ -424,6 +426,7 @@ impl SessionCommon {
             sendable_tls: ChunkVecBuffer::new(),
             protocol: Protocol::Tls13,
             quic: Quic { params: None },
+            hs_transcript: hash_hs::HandshakeHash::new(),
         }
     }
 
