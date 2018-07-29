@@ -17,6 +17,10 @@ pub enum SecretKind {
     ExporterMasterSecret,
     ResumptionMasterSecret,
     DerivedSecret,
+    #[cfg(feature = "quic")]
+    QuicClientInitial,
+    #[cfg(feature = "quic")]
+    QuicServerInitial,
 }
 
 impl SecretKind {
@@ -31,6 +35,10 @@ impl SecretKind {
             SecretKind::ExporterMasterSecret => b"exp master",
             SecretKind::ResumptionMasterSecret => b"res master",
             SecretKind::DerivedSecret => b"derived",
+            #[cfg(feature = "quic")]
+            SecretKind::QuicClientInitial => b"client in",
+            #[cfg(feature = "quic")]
+            SecretKind::QuicServerInitial => b"server in",
         }
     }
 }
@@ -84,6 +92,14 @@ impl KeySchedule {
             current_client_traffic_secret: Vec::new(),
             current_exporter_secret: Vec::new(),
         }
+    }
+
+    #[cfg(feature = "quic")]
+    pub fn quic_initial() -> KeySchedule {
+        let mut x = Self::new(&digest::SHA256, Protocol::Quic);
+        const INITIAL_SALT: &[u8] = &[0x9c, 0x10, 0x8f, 0x98, 0x52, 0x0a, 0x5c, 0x5c, 0x32, 0x96, 0x8e, 0x95, 0x0e, 0x8a, 0x2c, 0x5f, 0xe0, 0x6d, 0x6c, 0x38];
+        x.current = hmac::SigningKey::new(&digest::SHA256, INITIAL_SALT);
+        x
     }
 
     pub fn get_hash_of_empty_message(&self) -> &[u8] {

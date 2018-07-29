@@ -6,7 +6,8 @@ use msgs::handshake::{ClientExtension, ServerExtension, UnknownExtension};
 use msgs::message::{Message, MessagePayload};
 use server::{ServerConfig, ServerSession, ServerSessionImpl};
 use error::TLSError;
-use key_schedule::{SecretKind, TrafficKey, Protocol};
+use key_schedule::{KeySchedule, SecretKind, TrafficKey, Protocol};
+use ring::{digest, aead};
 
 use std::sync::Arc;
 use webpki;
@@ -24,6 +25,36 @@ pub struct Keys {
     pub read_key: Vec<u8>,
     /// IV to use when decrypting incoming data
     pub read_iv: Vec<u8>,
+}
+
+/// Endpoint of a connection
+#[derive(Debug, Copy, Clone)]
+pub enum Side {
+    /// Initiating endpoint
+    Client,
+    /// Accepting endpoint
+    Server,
+}
+
+impl Keys {
+    /// Create keys for use on initial packets, before handshake keys are available
+    pub fn initial(client_dst_id: &[u8], side: Side) -> Keys {
+        let hash = &digest::SHA256;
+        let cipher = &aead::AES_128_GCM;
+        let mut key_schedule = KeySchedule::quic_initial();
+        key_schedule.input_secret(client_dst_id);
+        let write_secret = key_schedule.derive(match side { Side::Client => SecretKind::QuicClientInitial, Side::Server => SecretKind::QuicServerInitial }, &[]);
+        let read_secret  = key_schedule.derive(match side { Side::Server => SecretKind::QuicClientInitial, Side::Client => SecretKind::QuicServerInitial }, &[]);
+        let write = TrafficKey::new(hash, &write_secret, cipher.key_len(), cipher.nonce_len(), Protocol::Quic);
+        let read = TrafficKey::new(hash, &read_secret, cipher.key_len(), cipher.nonce_len(), Protocol::Quic);
+        Keys {
+            algorithm: cipher,
+            write_key: write.key,
+            write_iv: write.iv,
+            read_key: read.key,
+            read_iv: read.iv,
+        }
+    }
 }
 
 /// Generic methods for QUIC sessions
@@ -45,6 +76,14 @@ pub trait QuicExt {
 
     /// Get the keys used to encrypt/decrypt 1-RTT traffic, if available
     fn get_1rtt_keys(&self) -> Option<Keys>;
+
+    /// Get 1-RTT keys for use following a key update.
+    ///
+    /// This should only be called after `get_1rtt_keys` has returned `Some(_)`.
+    ///
+    /// # Panics
+    /// - If called before the handshake completes.
+    fn update_1rtt_keys(&mut self) -> Keys;
 }
 
 impl QuicExt for ClientSession {
@@ -87,7 +126,29 @@ impl QuicExt for ClientSession {
         })
     }
 
-    fn get_1rtt_keys(&self) -> Option<Keys> { unimplemented!() }
+    fn get_1rtt_keys(&self) -> Option<Keys> {
+        if !self.imp.common.traffic { return None; }
+        let key_schedule = self.imp.common.key_schedule.as_ref().unwrap();
+        let suite = self.imp.common.get_suite_assert();
+        let write = TrafficKey::from_suite(suite, &key_schedule.current_client_traffic_secret, Protocol::Quic);
+        let read = TrafficKey::from_suite(suite, &key_schedule.current_server_traffic_secret, Protocol::Quic);
+        Some(Keys {
+            algorithm: suite.get_aead_alg(),
+            write_key: write.key,
+            write_iv: write.iv,
+            read_key: read.key,
+            read_iv: read.iv,
+        })
+    }
+
+    fn update_1rtt_keys(&mut self) -> Keys {
+        {
+            let key_schedule = self.imp.common.key_schedule.as_mut().unwrap();
+            key_schedule.current_client_traffic_secret = key_schedule.derive_next(SecretKind::ClientApplicationTrafficSecret);
+            key_schedule.current_server_traffic_secret = key_schedule.derive_next(SecretKind::ServerApplicationTrafficSecret);
+        }
+        self.get_1rtt_keys().expect("handshake complete")
+    }
 }
 
 impl QuicExt for ServerSession {
@@ -114,10 +175,45 @@ impl QuicExt for ServerSession {
     fn take_alert(&mut self) -> Option<u8> { unimplemented!() }
 
     fn get_handshake_keys(&self) -> Option<Keys> {
-        unimplemented!()
+        let key_schedule = self.imp.common.key_schedule.as_ref()?;
+        let handshake_hash = self.imp.common.hs_transcript.get_current_hash();
+        let suite = self.imp.common.get_suite_assert();
+        let write_secret = key_schedule.derive(SecretKind::ServerHandshakeTrafficSecret, &handshake_hash);
+        let write = TrafficKey::from_suite(suite, &write_secret, Protocol::Quic);
+        let read_secret = key_schedule.derive(SecretKind::ClientHandshakeTrafficSecret, &handshake_hash);
+        let read = TrafficKey::from_suite(suite, &read_secret, Protocol::Quic);
+        Some(Keys {
+            algorithm: suite.get_aead_alg(),
+            write_key: write.key,
+            write_iv: write.iv,
+            read_key: read.key,
+            read_iv: read.iv,
+        })
     }
 
-    fn get_1rtt_keys(&self) -> Option<Keys> { unimplemented!() }
+    fn get_1rtt_keys(&self) -> Option<Keys> {
+        if !self.imp.common.traffic { return None; }
+        let key_schedule = self.imp.common.key_schedule.as_ref().unwrap();
+        let suite = self.imp.common.get_suite_assert();
+        let write = TrafficKey::from_suite(suite, &key_schedule.current_server_traffic_secret, Protocol::Quic);
+        let read = TrafficKey::from_suite(suite, &key_schedule.current_client_traffic_secret, Protocol::Quic);
+        Some(Keys {
+            algorithm: suite.get_aead_alg(),
+            write_key: write.key,
+            write_iv: write.iv,
+            read_key: read.key,
+            read_iv: read.iv,
+        })
+    }
+
+    fn update_1rtt_keys(&mut self) -> Keys {
+        {
+            let key_schedule = self.imp.common.key_schedule.as_mut().unwrap();
+            key_schedule.current_client_traffic_secret = key_schedule.derive_next(SecretKind::ClientApplicationTrafficSecret);
+            key_schedule.current_server_traffic_secret = key_schedule.derive_next(SecretKind::ServerApplicationTrafficSecret);
+        }
+        self.get_1rtt_keys().expect("handshake complete")
+    }
 }
 
 /// Methods specific to QUIC client sessions
