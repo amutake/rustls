@@ -310,7 +310,7 @@ impl ExpectClientHello {
         let suite_hash = sess.common.get_suite_assert().get_hash();
         let handshake_hash = self.handshake.transcript.get_hash_given(suite_hash, &binder_plaintext);
 
-        let mut key_schedule = KeySchedule::new(suite_hash, sess.common.quic.enabled);
+        let mut key_schedule = KeySchedule::new(suite_hash, sess.common.protocol);
         key_schedule.input_secret(psk);
         let base_key = key_schedule.derive(SecretKind::ResumptionPSKBinderKey,
                                            key_schedule.get_hash_of_empty_message());
@@ -365,7 +365,7 @@ impl ExpectClientHello {
 
         // Start key schedule
         let suite = sess.common.get_suite_assert();
-        let mut key_schedule = KeySchedule::new(suite.get_hash(), sess.common.quic.enabled);
+        let mut key_schedule = KeySchedule::new(suite.get_hash(), sess.common.protocol);
         if let Some(psk) = resuming_psk {
             key_schedule.input_secret(&psk);
         } else {

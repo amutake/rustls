@@ -13,7 +13,7 @@ use suites::SupportedCipherSuite;
 use cipher::{MessageDecrypter, MessageEncrypter, self};
 use vecbuf::{ChunkVecBuffer, WriteV};
 use key;
-use key_schedule::{SecretKind, KeySchedule};
+use key_schedule::{SecretKind, KeySchedule, Protocol};
 use prf;
 use rand;
 use quic;
@@ -393,6 +393,8 @@ pub struct SessionCommon {
     received_plaintext: ChunkVecBuffer,
     sendable_plaintext: ChunkVecBuffer,
     pub sendable_tls: ChunkVecBuffer,
+    /// Protocol whose key schedule should be used. Unused for TLS < 1.3.
+    pub protocol: Protocol,
     pub quic: Quic,
 }
 
@@ -420,7 +422,8 @@ impl SessionCommon {
             received_plaintext: ChunkVecBuffer::new(),
             sendable_plaintext: ChunkVecBuffer::new(),
             sendable_tls: ChunkVecBuffer::new(),
-            quic: Quic { enabled: false, params: None },
+            protocol: Protocol::Tls13,
+            quic: Quic { params: None },
         }
     }
 
@@ -843,8 +846,6 @@ impl SessionCommon {
 }
 
 pub struct Quic {
-    /// Whether this is a QUIC session
-    pub enabled: bool,
     /// QUIC transport parameters received from the peer during the handshake
     pub params: Option<Vec<u8>>,
 }

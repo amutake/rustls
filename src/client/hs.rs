@@ -157,7 +157,7 @@ pub fn fill_in_psk_binder(sess: &mut ClientSessionImpl,
 
     // Run a fake key_schedule to simulate what the server will do if it choses
     // to resume.
-    let mut key_schedule = KeySchedule::new(suite_hash, sess.common.quic.enabled);
+    let mut key_schedule = KeySchedule::new(suite_hash, sess.common.protocol);
     key_schedule.input_secret(&resuming.master_secret.0);
     let base_key = key_schedule.derive(SecretKind::ResumptionPSKBinderKey, &empty_hash);
     let real_binder = key_schedule.sign_verify_data(&base_key, &handshake_hash);
@@ -545,7 +545,7 @@ impl ExpectServerHello {
             // Discard the early data key schedule.
             sess.early_data.rejected();
             sess.common.early_traffic = false;
-            let mut key_schedule = KeySchedule::new(suite.get_hash(), sess.common.quic.enabled);
+            let mut key_schedule = KeySchedule::new(suite.get_hash(), sess.common.protocol);
             key_schedule.input_empty();
             sess.common.set_key_schedule(key_schedule);
             self.handshake.resuming_session.take();

@@ -6,7 +6,7 @@ use msgs::handshake::{ClientExtension, ServerExtension, UnknownExtension};
 use msgs::message::{Message, MessagePayload};
 use server::{ServerConfig, ServerSession, ServerSessionImpl};
 use error::TLSError;
-use key_schedule::{SecretKind, TrafficKey};
+use key_schedule::{SecretKind, TrafficKey, Protocol};
 
 use std::sync::Arc;
 use webpki;
@@ -75,9 +75,9 @@ impl QuicExt for ClientSession {
         let handshake_hash = self.imp.handshake_transcript_hash();
         let suite = self.imp.common.get_suite_assert();
         let write_secret = key_schedule.derive(SecretKind::ClientHandshakeTrafficSecret, &handshake_hash);
-        let write = TrafficKey::from_suite(suite, &write_secret, true);
+        let write = TrafficKey::from_suite(suite, &write_secret, Protocol::Quic);
         let read_secret = key_schedule.derive(SecretKind::ServerHandshakeTrafficSecret, &handshake_hash);
-        let read = TrafficKey::from_suite(suite, &read_secret, true);
+        let read = TrafficKey::from_suite(suite, &read_secret, Protocol::Quic);
         Some(Keys {
             algorithm: suite.get_aead_alg(),
             write_key: write.key,
@@ -129,7 +129,7 @@ pub trait ClientQuicExt {
                 -> ClientSession {
         assert!(config.versions.iter().all(|x| x.get_u16() >= ProtocolVersion::TLSv1_3.get_u16()), "QUIC requires TLS version >= 1.3");
         let mut imp = ClientSessionImpl::new(config);
-        imp.common.quic.enabled = true;
+        imp.common.protocol = Protocol::Quic;
         imp.start_handshake(hostname.into(), vec![
             ClientExtension::Unknown(UnknownExtension {
                 typ: ExtensionType::TransportParameters,
@@ -155,7 +155,7 @@ pub trait ServerQuicExt {
                     payload: Payload::new(params),
                 }),
         ]);
-        imp.common.quic.enabled = true;
+        imp.common.protocol = Protocol::Quic;
         ServerSession { imp }
     }
 }

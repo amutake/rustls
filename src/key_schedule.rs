@@ -43,17 +43,31 @@ pub struct KeySchedule {
     need_derive_for_extract: bool,
     hash: &'static digest::Algorithm,
     hash_of_empty_message: [u8; digest::MAX_OUTPUT_LEN],
-    prefix: &'static [u8],
+    protocol: Protocol,
     pub current_client_traffic_secret: Vec<u8>,
     pub current_server_traffic_secret: Vec<u8>,
     pub current_exporter_secret: Vec<u8>,
 }
 
-const TLS13_LABEL_PREFIX: &[u8] = b"tls13 ";
-const QUIC_LABEL_PREFIX: &[u8] = b"quic ";
+#[derive(Copy, Clone)]
+pub enum Protocol {
+    Tls13,
+    #[cfg(feature = "quic")]
+    Quic,
+}
+
+impl Protocol {
+    fn prefix(&self) -> &'static [u8] {
+        match *self {
+            Protocol::Tls13 => b"tls13 ",
+            #[cfg(feature = "quic")]
+            Protocol::Quic => b"quic ",
+        }
+    }
+}
 
 impl KeySchedule {
-    pub fn new(hash: &'static digest::Algorithm, quic: bool) -> KeySchedule {
+    pub fn new(hash: &'static digest::Algorithm, protocol: Protocol) -> KeySchedule {
         let zeroes = [0u8; digest::MAX_OUTPUT_LEN];
 
         let mut empty_hash = [0u8; digest::MAX_OUTPUT_LEN];
@@ -65,7 +79,7 @@ impl KeySchedule {
             need_derive_for_extract: false,
             hash,
             hash_of_empty_message: empty_hash,
-            prefix: if quic { QUIC_LABEL_PREFIX } else { TLS13_LABEL_PREFIX },
+            protocol,
             current_server_traffic_secret: Vec::new(),
             current_client_traffic_secret: Vec::new(),
             current_exporter_secret: Vec::new(),
@@ -100,7 +114,7 @@ impl KeySchedule {
         debug_assert_eq!(hs_hash.len(), self.hash.output_len);
 
         _hkdf_expand_label_vec(&self.current,
-                               self.prefix,
+                               self.protocol.prefix(),
                                kind.to_bytes(),
                                hs_hash,
                                self.hash.output_len)
@@ -131,7 +145,7 @@ impl KeySchedule {
         debug_assert_eq!(hs_hash.len(), self.hash.output_len);
 
         let hmac_key = _hkdf_expand_label_vec(&hmac::SigningKey::new(self.hash, base_key),
-                                              self.prefix,
+                                              self.protocol.prefix(),
                                               b"finished",
                                               &[],
                                               self.hash.output_len);
@@ -146,7 +160,7 @@ impl KeySchedule {
     pub fn derive_next(&self, kind: SecretKind) -> Vec<u8> {
         let base_key = self.current_traffic_secret(kind);
         _hkdf_expand_label_vec(&hmac::SigningKey::new(self.hash, base_key),
-                               self.prefix,
+                               self.protocol.prefix(),
                                b"traffic upd",
                                &[],
                                self.hash.output_len)
@@ -156,7 +170,7 @@ impl KeySchedule {
     /// ticket_nonce.
     pub fn derive_ticket_psk(&self, rms: &[u8], nonce: &[u8]) -> Vec<u8> {
         _hkdf_expand_label_vec(&hmac::SigningKey::new(self.hash, rms),
-                               self.prefix,
+                               self.protocol.prefix(),
                                b"resumption",
                                nonce,
                                self.hash.output_len)
@@ -174,7 +188,7 @@ impl KeySchedule {
         _hkdf_expand_label(&mut secret[..self.hash.output_len],
                            &hmac::SigningKey::new(self.hash,
                                                   &self.current_exporter_secret),
-                           self.prefix,
+                           self.protocol.prefix(),
                            label,
                            h_empty.as_ref());
 
@@ -186,7 +200,7 @@ impl KeySchedule {
 
         _hkdf_expand_label(out,
                            &hmac::SigningKey::new(self.hash, &secret[..self.hash.output_len]),
-                           self.prefix,
+                           self.protocol.prefix(),
                            b"exporter",
                            &h_context[..self.hash.output_len]);
         Ok(())
@@ -229,28 +243,27 @@ pub struct TrafficKey {
 }
 
 impl TrafficKey {
-    pub fn new(hash: &'static digest::Algorithm, secret: &[u8], key_len: usize, iv_len: usize, quic: bool) -> Self {
-        let prefix = if quic { QUIC_LABEL_PREFIX } else { TLS13_LABEL_PREFIX };
-        let key = _hkdf_expand_label_vec(&hmac::SigningKey::new(hash, secret), prefix, b"key", &[], key_len);
-        let iv = _hkdf_expand_label_vec(&hmac::SigningKey::new(hash, secret), prefix, b"iv", &[], iv_len);
+    pub fn new(hash: &'static digest::Algorithm, secret: &[u8], key_len: usize, iv_len: usize, protocol: Protocol) -> Self {
+        let key = _hkdf_expand_label_vec(&hmac::SigningKey::new(hash, secret), protocol.prefix(), b"key", &[], key_len);
+        let iv = _hkdf_expand_label_vec(&hmac::SigningKey::new(hash, secret), protocol.prefix(), b"iv", &[], iv_len);
         Self { key, iv }
     }
 
-    pub fn from_suite(suite: &SupportedCipherSuite, secret: &[u8], quic: bool) -> Self {
-        Self::new(suite.get_hash(), secret, suite.enc_key_len, suite.fixed_iv_len, quic)
+    pub fn from_suite(suite: &SupportedCipherSuite, secret: &[u8], protocol: Protocol) -> Self {
+        Self::new(suite.get_hash(), secret, suite.enc_key_len, suite.fixed_iv_len, protocol)
     }
 }
 
 #[cfg(test)]
 mod test {
-    use super::{KeySchedule, SecretKind, TrafficKey};
+    use super::{KeySchedule, SecretKind, TrafficKey, Protocol};
     use ring::digest;
 
     #[test]
     fn smoke_test() {
         let fake_handshake_hash = [0u8; 32];
 
-        let mut ks = KeySchedule::new(&digest::SHA256, false);
+        let mut ks = KeySchedule::new(&digest::SHA256, Protocol::Tls13);
         ks.input_empty(); // no PSK
         ks.derive(SecretKind::ResumptionPSKBinderKey, &fake_handshake_hash);
         ks.input_secret(&[1u8, 2u8, 3u8, 4u8]);
@@ -348,13 +361,13 @@ mod test {
         ];
 
         let hash = &digest::SHA256;
-        let mut ks = KeySchedule::new(hash, false);
+        let mut ks = KeySchedule::new(hash, Protocol::Tls13);
         ks.input_empty();
         ks.input_secret(&ecdhe_secret);
 
         let got_client_hts = ks.derive(SecretKind::ClientHandshakeTrafficSecret,
                                        &hs_start_hash);
-        let traffic = TrafficKey::new(hash, &got_client_hts, client_hts_key.len(), client_hts_iv.len(), false);
+        let traffic = TrafficKey::new(hash, &got_client_hts, client_hts_key.len(), client_hts_iv.len(), Protocol::Tls13);
         assert_eq!(got_client_hts,
                    client_hts.to_vec());
         assert_eq!(traffic.key, client_hts_key.to_vec());
@@ -362,7 +375,7 @@ mod test {
 
         let got_server_hts = ks.derive(SecretKind::ServerHandshakeTrafficSecret,
                                        &hs_start_hash);
-        let traffic = TrafficKey::new(hash, &got_server_hts, server_hts_key.len(), server_hts_iv.len(), false);
+        let traffic = TrafficKey::new(hash, &got_server_hts, server_hts_key.len(), server_hts_iv.len(), Protocol::Tls13);
         assert_eq!(got_server_hts,
                    server_hts.to_vec());
         assert_eq!(traffic.key, server_hts_key.to_vec());
@@ -372,7 +385,7 @@ mod test {
 
         let got_client_ats = ks.derive(SecretKind::ClientApplicationTrafficSecret,
                                        &hs_full_hash);
-        let traffic = TrafficKey::new(hash, &got_client_ats, client_ats_key.len(), client_ats_iv.len(), false);
+        let traffic = TrafficKey::new(hash, &got_client_ats, client_ats_key.len(), client_ats_iv.len(), Protocol::Tls13);
         assert_eq!(got_client_ats,
                    client_ats.to_vec());
         assert_eq!(traffic.key, client_ats_key.to_vec());
@@ -380,7 +393,7 @@ mod test {
 
         let got_server_ats = ks.derive(SecretKind::ServerApplicationTrafficSecret,
                                        &hs_full_hash);
-        let traffic = TrafficKey::new(hash, &got_server_ats, server_ats_key.len(), server_ats_iv.len(), false);
+        let traffic = TrafficKey::new(hash, &got_server_ats, server_ats_key.len(), server_ats_iv.len(), Protocol::Tls13);
         assert_eq!(got_server_ats,
                    server_ats.to_vec());
         assert_eq!(traffic.key, server_ats_key.to_vec());
