@@ -14,6 +14,7 @@ use webpki;
 use ring;
 
 /// Keys used to encrypt/decrypt traffic
+#[derive(Debug, Clone)]
 pub struct Keys {
     /// Encryption algorithm to use
     pub algorithm: &'static ring::aead::Algorithm,
