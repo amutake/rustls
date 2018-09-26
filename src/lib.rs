@@ -252,7 +252,8 @@ mod verify;
 #[cfg(test)]
 mod verifybench;
 mod handshake;
-mod suites;
+#[allow(missing_docs)]
+pub mod suites;
 mod ticketer;
 mod server;
 mod client;
@@ -321,4 +322,3 @@ pub use verify::{ServerCertVerifier, ServerCertVerified,
     ClientCertVerifier, ClientCertVerified};
 #[cfg(feature = "dangerous_configuration")]
 pub use client::danger::DangerousClientConfig;
-
