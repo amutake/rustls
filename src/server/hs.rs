@@ -38,8 +38,6 @@ use server::common::{HandshakeDetails, ServerKXDetails, ClientCertDetails};
 
 use ring::constant_time;
 
-const TLS13_DRAFT: u16 = 0x7f1c;
-
 macro_rules! extract_handshake(
   ( $m:expr, $t:path ) => (
     match $m.payload {
@@ -329,7 +327,7 @@ impl ExpectClientHello {
 
         let kse = KeyShareEntry::new(share.group, &kxr.pubkey);
         extensions.push(ServerExtension::KeyShare(kse));
-        extensions.push(ServerExtension::SupportedVersions(ProtocolVersion::Unknown(TLS13_DRAFT)));
+        extensions.push(ServerExtension::SupportedVersions(ProtocolVersion::TLSv1_3));
 
         if let Some(psk_idx) = chosen_psk_idx {
             extensions.push(ServerExtension::PresharedKey(psk_idx as u16));
@@ -406,7 +404,7 @@ impl ExpectClientHello {
         };
 
         req.extensions.push(HelloRetryExtension::KeyShare(group));
-        req.extensions.push(HelloRetryExtension::SupportedVersions(ProtocolVersion::Unknown(TLS13_DRAFT)));
+        req.extensions.push(HelloRetryExtension::SupportedVersions(ProtocolVersion::TLSv1_3));
 
         let m = Message {
             typ: ContentType::Handshake,
@@ -536,7 +534,7 @@ impl ExpectClientHello {
 
         let signing_key = &server_key.key;
         let signer = signing_key.choose_scheme(schemes)
-            .ok_or_else(|| TLSError::PeerIncompatibleError("no overlapping sigschemes".to_string()))?;
+            .ok_or_else(|| incompatible(sess, "no overlapping sigschemes"))?;
 
         let scheme = signer.get_scheme();
         let sig = signer.sign(&message)?;
@@ -953,8 +951,8 @@ impl State for ExpectClientHello {
 
     fn handle(mut self: Box<Self>, sess: &mut ServerSessionImpl, m: Message) -> NextStateOrError {
         let client_hello = extract_handshake!(m, HandshakePayload::ClientHello).unwrap();
-        let tls13_enabled = sess.config.versions.contains(&ProtocolVersion::TLSv1_3);
-        let tls12_enabled = sess.config.versions.contains(&ProtocolVersion::TLSv1_2);
+        let tls13_enabled = sess.config.supports_version(ProtocolVersion::TLSv1_3);
+        let tls12_enabled = sess.config.supports_version(ProtocolVersion::TLSv1_2);
         trace!("we got a clienthello {:?}", client_hello);
 
         if !client_hello.compression_methods.contains(&Compression::Null) {
@@ -970,7 +968,7 @@ impl State for ExpectClientHello {
         // Are we doing TLS1.3?
         let maybe_versions_ext = client_hello.get_versions_extension();
         if let Some(versions) = maybe_versions_ext {
-            if versions.contains(&ProtocolVersion::Unknown(TLS13_DRAFT)) && tls13_enabled {
+            if versions.contains(&ProtocolVersion::TLSv1_3) && tls13_enabled {
                 sess.common.negotiated_version = Some(ProtocolVersion::TLSv1_3);
             } else if !versions.contains(&ProtocolVersion::TLSv1_2) || !tls12_enabled {
                 sess.common.send_fatal_alert(AlertDescription::ProtocolVersion);
@@ -1081,6 +1079,11 @@ impl State for ExpectClientHello {
             sess.common.send_fatal_alert(AlertDescription::IllegalParameter);
             return Err(TLSError::PeerIncompatibleError("client didn't support uncompressed ec points"
                 .to_string()));
+        }
+
+        // -- If TLS1.3 is enabled, signal the downgrade in the server random
+        if tls13_enabled {
+            self.handshake.randoms.set_tls12_downgrade_marker();
         }
 
         // -- Check for resumption --

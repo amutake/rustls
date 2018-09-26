@@ -38,9 +38,6 @@ use std::mem;
 use ring::constant_time;
 use webpki;
 
-// draft-ietf-tls-tls13-28
-const TLS13_DRAFT: u16 = 0x7f1c;
-
 macro_rules! extract_handshake(
   ( $m:expr, $t:path ) => (
     match $m.payload {
@@ -250,12 +247,12 @@ fn emit_client_hello_for_retry(sess: &mut ClientSessionImpl,
         (SessionID::empty(), Vec::new(), ProtocolVersion::Unknown(0))
     };
 
-    let support_tls12 = sess.config.versions.contains(&ProtocolVersion::TLSv1_2);
-    let support_tls13 = sess.config.versions.contains(&ProtocolVersion::TLSv1_3);
+    let support_tls12 = sess.config.supports_version(ProtocolVersion::TLSv1_2);
+    let support_tls13 = sess.config.supports_version(ProtocolVersion::TLSv1_3);
 
     let mut supported_versions = Vec::new();
     if support_tls13 {
-        supported_versions.push(ProtocolVersion::Unknown(TLS13_DRAFT));
+        supported_versions.push(ProtocolVersion::TLSv1_3);
     }
 
     if support_tls12 {
@@ -645,6 +642,7 @@ impl State for ExpectServerHello {
         trace!("We got ServerHello {:#?}", server_hello);
 
         use ProtocolVersion::{TLSv1_2, TLSv1_3};
+        let tls13_supported = sess.config.supports_version(TLSv1_3);
 
         let server_version = if server_hello.legacy_version == TLSv1_2 {
             server_hello.get_supported_versions()
@@ -654,12 +652,10 @@ impl State for ExpectServerHello {
         };
 
         match server_version {
-            TLSv1_3 | ProtocolVersion::Unknown(TLS13_DRAFT) if sess.config
-                .versions
-                .contains(&TLSv1_3) => {
+            TLSv1_3 if tls13_supported => {
                 sess.common.negotiated_version = Some(TLSv1_3);
             }
-            TLSv1_2 if sess.config.versions.contains(&TLSv1_2) => {
+            TLSv1_2 if sess.config.supports_version(TLSv1_2) => {
                 if sess.early_data.is_enabled() && sess.common.early_traffic {
                     // The client must fail with a dedicated error code if the server
                     // responds with TLS 1.2 when offering 0-RTT.
@@ -747,6 +743,11 @@ impl State for ExpectServerHello {
         // Save ServerRandom and SessionID
         server_hello.random.write_slice(&mut self.handshake.randoms.server);
         self.handshake.session_id = server_hello.session_id;
+
+        // Look for TLS1.3 downgrade signal in server random
+        if tls13_supported && self.handshake.randoms.has_tls12_downgrade_marker() {
+            return Err(illegal_param(sess, "downgrade to TLS1.2 when TLS1.3 is supported"));
+        }
 
         // Doing EMS?
         if server_hello.ems_support_acked() {
@@ -877,8 +878,7 @@ impl ExpectServerHelloOrHelloRetryRequest {
 
         // Or asks us to talk a protocol we didn't offer, or doesn't support HRR at all.
         match hrr.get_supported_versions() {
-            Some(ProtocolVersion::TLSv1_3) |
-                Some(ProtocolVersion::Unknown(TLS13_DRAFT)) => {
+            Some(ProtocolVersion::TLSv1_3) => {
                 sess.common.negotiated_version = Some(ProtocolVersion::TLSv1_3);
             }
             _ => {
@@ -1595,7 +1595,7 @@ impl State for ExpectTLS13CertificateRequest {
             .collect::<Vec<SignatureScheme>>();
 
         if compat_sigschemes.is_empty() {
-            sess.common.send_fatal_alert(AlertDescription::DecodeError);
+            sess.common.send_fatal_alert(AlertDescription::HandshakeFailure);
             return Err(TLSError::PeerIncompatibleError("server sent bad certreq schemes".to_string()));
         }
 
