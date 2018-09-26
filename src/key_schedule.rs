@@ -256,13 +256,15 @@ fn _hkdf_expand_label(output: &mut [u8],
 pub struct TrafficKey {
     pub key: Vec<u8>,
     pub iv: Vec<u8>,
+    pub pn: Vec<u8>,
 }
 
 impl TrafficKey {
     pub fn new(hash: &'static digest::Algorithm, secret: &[u8], key_len: usize, iv_len: usize, protocol: Protocol) -> Self {
         let key = _hkdf_expand_label_vec(&hmac::SigningKey::new(hash, secret), protocol.prefix(), b"key", &[], key_len);
         let iv = _hkdf_expand_label_vec(&hmac::SigningKey::new(hash, secret), protocol.prefix(), b"iv", &[], iv_len);
-        Self { key, iv }
+        let pn = _hkdf_expand_label_vec(&hmac::SigningKey::new(hash, secret), protocol.prefix(), b"pn", &[], key_len);
+        Self { key, iv, pn }
     }
 
     pub fn from_suite(suite: &SupportedCipherSuite, secret: &[u8], protocol: Protocol) -> Self {

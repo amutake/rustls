@@ -21,10 +21,14 @@ pub struct Keys {
     pub write_key: Vec<u8>,
     /// IV to use when encrypting outgoing data
     pub write_iv: Vec<u8>,
+    /// PN to use when decrypting incoming data
+    pub write_pn: Vec<u8>,
     /// Key to use when decrypting incoming data
     pub read_key: Vec<u8>,
     /// IV to use when decrypting incoming data
     pub read_iv: Vec<u8>,
+    /// PN to use when decrypting incoming data
+    pub read_pn: Vec<u8>,
 }
 
 /// Endpoint of a connection
@@ -51,8 +55,10 @@ impl Keys {
             algorithm: cipher,
             write_key: write.key,
             write_iv: write.iv,
+            write_pn: write.pn,
             read_key: read.key,
             read_iv: read.iv,
+            read_pn: read.pn,
         }
     }
 }
@@ -121,8 +127,10 @@ impl QuicExt for ClientSession {
             algorithm: suite.get_aead_alg(),
             write_key: write.key,
             write_iv: write.iv,
+            write_pn: write.pn,
             read_key: read.key,
             read_iv: read.iv,
+            read_pn: read.pn,
         })
     }
 
@@ -136,8 +144,10 @@ impl QuicExt for ClientSession {
             algorithm: suite.get_aead_alg(),
             write_key: write.key,
             write_iv: write.iv,
+            write_pn: write.pn,
             read_key: read.key,
             read_iv: read.iv,
+            read_pn: read.pn,
         })
     }
 
@@ -186,8 +196,10 @@ impl QuicExt for ServerSession {
             algorithm: suite.get_aead_alg(),
             write_key: write.key,
             write_iv: write.iv,
+            write_pn: write.pn,
             read_key: read.key,
             read_iv: read.iv,
+            read_pn: read.pn,
         })
     }
 
@@ -201,8 +213,10 @@ impl QuicExt for ServerSession {
             algorithm: suite.get_aead_alg(),
             write_key: write.key,
             write_iv: write.iv,
+            write_pn: write.pn,
             read_key: read.key,
             read_iv: read.iv,
+            read_pn: read.pn,
         })
     }
 

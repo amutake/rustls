@@ -112,7 +112,7 @@ pub fn new_tls12(scs: &'static SupportedCipherSuite,
 
 pub fn new_tls13_read(scs: &'static SupportedCipherSuite,
                       secret: &[u8]) -> Box<MessageDecrypter> {
-    let TrafficKey { key, iv } = TrafficKey::from_suite(scs, secret, Protocol::Tls13);
+    let TrafficKey { key, iv, pn: _ } = TrafficKey::from_suite(scs, secret, Protocol::Tls13);
     let aead_alg = scs.get_aead_alg();
 
     Box::new(TLS13MessageDecrypter::new(aead_alg, &key, &iv))
@@ -120,7 +120,7 @@ pub fn new_tls13_read(scs: &'static SupportedCipherSuite,
 
 pub fn new_tls13_write(scs: &'static SupportedCipherSuite,
                        secret: &[u8]) -> Box<MessageEncrypter> {
-    let TrafficKey { key, iv } = TrafficKey::from_suite(scs, secret, Protocol::Tls13);
+    let TrafficKey { key, iv, pn: _ } = TrafficKey::from_suite(scs, secret, Protocol::Tls13);
     let aead_alg = scs.get_aead_alg();
 
     Box::new(TLS13MessageEncrypter::new(aead_alg, &key, &iv))
