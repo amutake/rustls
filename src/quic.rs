@@ -133,7 +133,11 @@ impl QuicExt for ClientSession {
     }
 
     fn write_hs(&mut self, buf: &mut Vec<u8>) {
-        unimplemented!()
+        let msg = self.imp.common.sendable_msgs.pop_front().unwrap();
+        match msg.payload {
+            MessagePayload::Opaque(mut payload) => buf.append(&mut payload.0),
+            _ => panic!("this is not a handshake message"),
+        }
     }
 
     fn take_alert(&mut self) -> Option<u8> {

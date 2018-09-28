@@ -1,26 +1,26 @@
-use ring;
-use std::io::{Read, Write};
-use msgs::message::{BorrowMessage, Message, MessagePayload};
-use msgs::deframer::MessageDeframer;
-use msgs::fragmenter::{MessageFragmenter, MAX_FRAGMENT_LEN};
-use msgs::hsjoiner::HandshakeJoiner;
+use cipher::{self, MessageDecrypter, MessageEncrypter};
+use error::TLSError;
+use hash_hs;
+use key;
+use key_schedule::{KeySchedule, Protocol, SecretKind};
 use msgs::base::Payload;
 use msgs::codec::Codec;
-use msgs::enums::{ContentType, ProtocolVersion, AlertDescription, AlertLevel};
+use msgs::deframer::MessageDeframer;
 use msgs::enums::KeyUpdateRequest;
-use error::TLSError;
-use suites::SupportedCipherSuite;
-use cipher::{MessageDecrypter, MessageEncrypter, self};
-use vecbuf::{ChunkVecBuffer, WriteV};
-use key;
-use key_schedule::{SecretKind, KeySchedule, Protocol};
+use msgs::enums::{AlertDescription, AlertLevel, ContentType, ProtocolVersion};
+use msgs::fragmenter::{MessageFragmenter, MAX_FRAGMENT_LEN};
+use msgs::hsjoiner::HandshakeJoiner;
+use msgs::message::{BorrowMessage, Message, MessagePayload};
 use prf;
-use rand;
 use quic;
-use hash_hs;
+use rand;
+use ring;
+use std::io::{Read, Write};
+use suites::SupportedCipherSuite;
+use vecbuf::{ChunkVecBuffer, WriteV};
 
-use std::io;
 use std::collections::VecDeque;
+use std::io;
 
 /// Generalises `ClientSession` and `ServerSession`
 pub trait Session: quic::QuicExt + Read + Write + Send + Sync {
@@ -127,10 +127,12 @@ pub trait Session: quic::QuicExt + Read + Write + Send + Sync {
     ///
     /// This function fails if called prior to the handshake completing;
     /// check with `is_handshaking()` first.
-    fn export_keying_material(&self,
-                              output: &mut [u8],
-                              label: &[u8],
-                              context: Option<&[u8]>) -> Result<(), TLSError>;
+    fn export_keying_material(
+        &self,
+        output: &mut [u8],
+        label: &[u8],
+        context: Option<&[u8]>,
+    ) -> Result<(), TLSError>;
 
     /// Retrieves the ciphersuite agreed with the peer.
     ///
@@ -160,7 +162,9 @@ pub trait Session: quic::QuicExt + Read + Write + Send + Sync {
     /// Errors from TLS record handling (ie, from `process_new_packets()`)
     /// are wrapped in an `io::ErrorKind::InvalidData`-kind error.
     fn complete_io<T>(&mut self, io: &mut T) -> Result<(usize, usize), io::Error>
-        where Self: Sized, T: Read + Write
+    where
+        Self: Sized,
+        T: Read + Write,
     {
         let until_handshaked = self.is_handshaking();
         let mut eof = false;
@@ -179,12 +183,12 @@ pub trait Session: quic::QuicExt + Read + Write + Send + Sync {
             if !eof && self.wants_read() {
                 match self.read_tls(io)? {
                     0 => eof = true,
-                    n => rdlen += n
+                    n => rdlen += n,
                 }
             }
 
             match self.process_new_packets() {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err(e) => {
                     // In case we have an alert to send describing this error,
                     // try a last-gasp write -- but don't predate the primary
@@ -192,14 +196,14 @@ pub trait Session: quic::QuicExt + Read + Write + Send + Sync {
                     let _ignored = self.write_tls(io);
 
                     return Err(io::Error::new(io::ErrorKind::InvalidData, e));
-                },
+                }
             };
 
             match (eof, until_handshaked, self.is_handshaking()) {
                 (_, true, false) => return Ok((rdlen, wrlen)),
                 (_, false, _) => return Ok((rdlen, wrlen)),
                 (true, true, true) => return Err(io::Error::from(io::ErrorKind::UnexpectedEof)),
-                (..) => ()
+                (..) => (),
             }
         }
     }
@@ -267,10 +271,11 @@ pub struct SessionSecrets {
 }
 
 impl SessionSecrets {
-    pub fn new(randoms: &SessionRandoms,
-               hashalg: &'static ring::digest::Algorithm,
-               pms: &[u8])
-               -> SessionSecrets {
+    pub fn new(
+        randoms: &SessionRandoms,
+        hashalg: &'static ring::digest::Algorithm,
+        pms: &[u8],
+    ) -> SessionSecrets {
         let mut ret = SessionSecrets {
             randoms: randoms.clone(),
             hash: hashalg,
@@ -278,36 +283,43 @@ impl SessionSecrets {
         };
 
         let randoms = join_randoms(&ret.randoms.client, &ret.randoms.server);
-        prf::prf(&mut ret.master_secret,
-                 ret.hash,
-                 pms,
-                 b"master secret",
-                 &randoms);
+        prf::prf(
+            &mut ret.master_secret,
+            ret.hash,
+            pms,
+            b"master secret",
+            &randoms,
+        );
         ret
     }
 
-    pub fn new_ems(randoms: &SessionRandoms,
-                   hs_hash: &[u8],
-                   hashalg: &'static ring::digest::Algorithm,
-                   pms: &[u8]) -> SessionSecrets {
+    pub fn new_ems(
+        randoms: &SessionRandoms,
+        hs_hash: &[u8],
+        hashalg: &'static ring::digest::Algorithm,
+        pms: &[u8],
+    ) -> SessionSecrets {
         let mut ret = SessionSecrets {
             randoms: randoms.clone(),
             hash: hashalg,
-            master_secret: [0u8; 48]
+            master_secret: [0u8; 48],
         };
 
-        prf::prf(&mut ret.master_secret,
-                 ret.hash,
-                 pms,
-                 b"extended master secret",
-                 hs_hash);
+        prf::prf(
+            &mut ret.master_secret,
+            ret.hash,
+            pms,
+            b"extended master secret",
+            hs_hash,
+        );
         ret
     }
 
-    pub fn new_resume(randoms: &SessionRandoms,
-                      hashalg: &'static ring::digest::Algorithm,
-                      master_secret: &[u8])
-                      -> SessionSecrets {
+    pub fn new_resume(
+        randoms: &SessionRandoms,
+        hashalg: &'static ring::digest::Algorithm,
+        master_secret: &[u8],
+    ) -> SessionSecrets {
         let mut ret = SessionSecrets {
             randoms: randoms.clone(),
             hash: hashalg,
@@ -324,11 +336,13 @@ impl SessionSecrets {
         // NOTE: opposite order to above for no good reason.
         // Don't design security protocols on drugs, kids.
         let randoms = join_randoms(&self.randoms.server, &self.randoms.client);
-        prf::prf(&mut out,
-                 self.hash,
-                 &self.master_secret,
-                 b"key expansion",
-                 &randoms);
+        prf::prf(
+            &mut out,
+            self.hash,
+            &self.master_secret,
+            b"key expansion",
+            &randoms,
+        );
 
         out
     }
@@ -343,11 +357,13 @@ impl SessionSecrets {
         let mut out = Vec::new();
         out.resize(12, 0u8);
 
-        prf::prf(&mut out,
-                 self.hash,
-                 &self.master_secret,
-                 label,
-                 handshake_hash);
+        prf::prf(
+            &mut out,
+            self.hash,
+            &self.master_secret,
+            label,
+            handshake_hash,
+        );
         out
     }
 
@@ -359,10 +375,7 @@ impl SessionSecrets {
         self.make_verify_data(handshake_hash, b"server finished")
     }
 
-    pub fn export_keying_material(&self,
-                                  output: &mut [u8],
-                                  label: &[u8],
-                                  context: Option<&[u8]>) {
+    pub fn export_keying_material(&self, output: &mut [u8], label: &[u8], context: Option<&[u8]>) {
         let mut randoms = Vec::new();
         randoms.extend_from_slice(&self.randoms.client);
         randoms.extend_from_slice(&self.randoms.server);
@@ -372,11 +385,7 @@ impl SessionSecrets {
             randoms.extend_from_slice(context);
         }
 
-        prf::prf(output,
-                 self.hash,
-                 &self.master_secret,
-                 label,
-                 &randoms)
+        prf::prf(output, self.hash, &self.master_secret, label, &randoms)
     }
 }
 
@@ -386,7 +395,7 @@ static SEQ_HARD_LIMIT: u64 = 0xffff_ffff_ffff_fffeu64;
 
 enum Limit {
     Yes,
-    No
+    No,
 }
 
 pub struct SessionCommon {
@@ -411,6 +420,7 @@ pub struct SessionCommon {
     received_plaintext: ChunkVecBuffer,
     sendable_plaintext: ChunkVecBuffer,
     pub sendable_tls: ChunkVecBuffer,
+    pub sendable_msgs: VecDeque<Message>,
     /// Protocol whose key schedule should be used. Unused for TLS < 1.3.
     pub protocol: Protocol,
     pub quic: Quic,
@@ -441,6 +451,7 @@ impl SessionCommon {
             received_plaintext: ChunkVecBuffer::new(),
             sendable_plaintext: ChunkVecBuffer::new(),
             sendable_tls: ChunkVecBuffer::new(),
+            sendable_msgs: VecDeque::new(),
             protocol: Protocol::Tls13,
             quic: Quic { params: None },
             hs_transcript: hash_hs::HandshakeHash::new(),
@@ -448,10 +459,10 @@ impl SessionCommon {
     }
 
     pub fn is_tls13(&self) -> bool {
-      match self.negotiated_version {
-        Some(ProtocolVersion::TLSv1_3) => true,
-        _ => false
-      }
+        match self.negotiated_version {
+            Some(ProtocolVersion::TLSv1_3) => true,
+            _ => false,
+        }
     }
 
     pub fn get_suite(&self) -> Option<&'static SupportedCipherSuite> {
@@ -472,7 +483,7 @@ impl SessionCommon {
                 self.suite = Some(suite);
                 true
             }
-            _ => false
+            _ => false,
         }
     }
 
@@ -488,15 +499,13 @@ impl SessionCommon {
         self.key_schedule = Some(ks);
     }
 
-    pub fn set_message_encrypter(&mut self,
-                                 cipher: Box<MessageEncrypter>) {
+    pub fn set_message_encrypter(&mut self, cipher: Box<MessageEncrypter>) {
         self.message_encrypter = cipher;
         self.write_seq = 0;
         self.we_encrypting = true;
     }
 
-    pub fn set_message_decrypter(&mut self,
-                                 cipher: Box<MessageDecrypter>) {
+    pub fn set_message_decrypter(&mut self, cipher: Box<MessageDecrypter>) {
         self.message_decrypter = cipher;
         self.read_seq = 0;
         self.peer_encrypting = true;
@@ -606,9 +615,7 @@ impl SessionCommon {
     }
 
     /// Like send_msg_encrypt, but operate on an appdata directly.
-    fn send_appdata_encrypt(&mut self,
-                            payload: &[u8],
-                            limit: Limit) -> usize {
+    fn send_appdata_encrypt(&mut self, payload: &[u8], limit: Limit) -> usize {
         if self.want_write_key_update {
             self.do_write_key_update();
         }
@@ -619,14 +626,16 @@ impl SessionCommon {
         // constant and predictable amount, so it's not a terrible issue.
         let len = match limit {
             Limit::Yes => self.sendable_tls.apply_limit(payload.len()),
-            Limit::No => payload.len()
+            Limit::No => payload.len(),
         };
 
         let mut plain_messages = VecDeque::new();
-        self.message_fragmenter.fragment_borrow(ContentType::ApplicationData,
-                                                ProtocolVersion::TLSv1_2,
-                                                &payload[..len],
-                                                &mut plain_messages);
+        self.message_fragmenter.fragment_borrow(
+            ContentType::ApplicationData,
+            ProtocolVersion::TLSv1_2,
+            &payload[..len],
+            &mut plain_messages,
+        );
 
         for m in plain_messages {
             self.send_single_fragment(m);
@@ -701,7 +710,7 @@ impl SessionCommon {
             // plaintext to send once we do.
             let len = match limit {
                 Limit::Yes => self.sendable_plaintext.append_limited_copy(data),
-                Limit::No => self.sendable_plaintext.append(data.to_vec())
+                Limit::No => self.sendable_plaintext.append(data.to_vec()),
             };
             return Ok(len);
         }
@@ -730,14 +739,14 @@ impl SessionCommon {
 
         while !self.sendable_plaintext.is_empty() {
             let buf = self.sendable_plaintext.take_one();
-            self.send_plain(&buf, Limit::No)
-                .unwrap();
+            self.send_plain(&buf, Limit::No).unwrap();
         }
     }
 
     // Put m into sendable_tls for writing.
     fn queue_tls_message(&mut self, m: Message) {
         self.sendable_tls.append(m.get_encoding());
+        self.sendable_msgs.push_back(m);
     }
 
     /// Send a raw TLS message, fragmenting it if needed.
@@ -761,8 +770,10 @@ impl SessionCommon {
         let len = self.received_plaintext.read(buf)?;
 
         if len == 0 && self.connection_at_eof() && self.received_plaintext.is_empty() {
-            return Err(io::Error::new(io::ErrorKind::ConnectionAborted,
-                                      "CloseNotify alert received"));
+            return Err(io::Error::new(
+                io::ErrorKind::ConnectionAborted,
+                "CloseNotify alert received",
+            ));
         }
 
         Ok(len)
@@ -800,10 +811,11 @@ impl SessionCommon {
         self.send_warning_alert_no_log(AlertDescription::CloseNotify);
     }
 
-    pub fn process_key_update(&mut self,
-                              kur: &KeyUpdateRequest,
-                              read_kind: SecretKind)
-                              -> Result<(), TLSError> {
+    pub fn process_key_update(
+        &mut self,
+        kur: &KeyUpdateRequest,
+        read_kind: SecretKind,
+    ) -> Result<(), TLSError> {
         // Mustn't be interleaved with other handshake messages.
         if !self.handshake_joiner.is_empty() {
             let msg = "KeyUpdate received at wrong time".to_string();
@@ -823,8 +835,7 @@ impl SessionCommon {
         }
 
         // Update our read-side keys.
-        let new_read_key = self.get_key_schedule()
-            .derive_next(read_kind);
+        let new_read_key = self.get_key_schedule().derive_next(read_kind);
         let suite = self.get_suite_assert();
         self.set_message_decrypter(cipher::new_tls13_read(suite, &new_read_key));
 
@@ -837,10 +848,12 @@ impl SessionCommon {
         Ok(())
     }
 
-    pub fn export_keying_material(&self,
-                                  output: &mut [u8],
-                                  label: &[u8],
-                                  context: Option<&[u8]>) -> Result<(), TLSError> {
+    pub fn export_keying_material(
+        &self,
+        output: &mut [u8],
+        label: &[u8],
+        context: Option<&[u8]>,
+    ) -> Result<(), TLSError> {
         if !self.traffic {
             Err(TLSError::HandshakeNotComplete)
         } else if self.is_tls13() {
@@ -851,9 +864,7 @@ impl SessionCommon {
         } else {
             self.secrets
                 .as_ref()
-                .map(|sec| {
-                    sec.export_keying_material(output, label, context)
-                })
+                .map(|sec| sec.export_keying_material(output, label, context))
                 .ok_or_else(|| TLSError::HandshakeNotComplete)
         }
     }
