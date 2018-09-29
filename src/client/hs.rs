@@ -2221,7 +2221,7 @@ fn emit_finished_tls13(sess: &mut ClientSessionImpl) {
             payload: HandshakePayload::Finished(verify_data_payload),
         }),
     };
-
+    println!("start emit_finished_tls13: {:?}", m);
     sess.common.hs_transcript.add_message(&m);
     sess.common.send_msg(m, true);
 }
@@ -2265,6 +2265,8 @@ impl State for ExpectTLS13Finished {
     }
 
     fn handle(self: Box<Self>, sess: &mut ClientSessionImpl, m: Message) -> NextStateOrError {
+        println!("start ExpectTLS13Finished.handle. {:?}", m);
+
         let mut st = *self;
         let finished = extract_handshake!(m, HandshakePayload::Finished).unwrap();
 
