@@ -747,7 +747,9 @@ impl SessionCommon {
     fn queue_tls_message(&mut self, m: Message) {
         println!("message queued: {:?}", m);
         self.sendable_tls.append(m.get_encoding());
-        self.sendable_msgs.push_back(m);
+        if m.typ == ContentType::Handshake {
+            self.sendable_msgs.push_back(m);
+        }
     }
 
     /// Send a raw TLS message, fragmenting it if needed.
