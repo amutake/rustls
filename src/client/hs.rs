@@ -2223,7 +2223,7 @@ fn emit_finished_tls13(sess: &mut ClientSessionImpl) {
     };
     println!("start emit_finished_tls13: {:?}", m);
     sess.common.hs_transcript.add_message(&m);
-    sess.common.send_msg(m, true);
+    sess.common.send_msg(m, false); // MODIFIED for QUIC!
 }
 
 fn emit_end_of_early_data_tls13(sess: &mut ClientSessionImpl) {
